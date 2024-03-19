@@ -1,0 +1,210 @@
+﻿Program.Sub.Preflight.Start
+V.Global.sError.Declare(String)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Author: Arturo Almaguer
+'Date: 9/14/2022
+'Customer: Change Parts Inc, quote number 13745
+'This program validates whether a customer is inactive or not.
+'This script is launched off multiple hooks shown below.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sSQL.Declare(String)
+	V.Local.sCustomer.Declare(String)
+	V.Local.sDateTime.Declare(String)
+	V.Local.bFlag.Declare(String)
+	
+	'checking to see if custom table exists if not create table on first run.
+	F.Intrinsic.Control.CallSub("CheckTable")
+	
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	'check if there are any new customers added from the last run in GSS
+	f.Data.Datatable.CreateFromSQL(DT_NewCust,Con,"Select DISTINCT CUSTOMER, cast(0 as bit) as FLAG_INACTIVE, cast('INITIALUPL' as CHAR(20)) as USER_ID, CAST(NOW() as DATETIME) as DATETIME_STAMP from V_CUSTOMER_MASTER where CUSTOMER not in (SELECT DISTINCT CUSTOMER FROM GCG_6900_InactiveCustomers);  ")
+	'load the custom table with new records.
+	f.Data.Datatable.SaveToDB(DT_NewCust,Con,"GCG_6900_InactiveCustomers","CUSTOMER",256)
+	F.ODBC.Connection!Con.Close
+	
+	F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+		
+		F.Intrinsic.Control.Case(14387)
+		'AR Customer Master Customer selected hook
+			f.Intrinsic.Control.If(v.passed.000002.Trim,=,"")
+				V.Passed.GAB-CHK-1.Set("N")
+				F.Intrinsic.Control.CallSub("Unload")
+			f.Intrinsic.Control.EndIf
+			'Continue with process if SO is an existing one
+			F.Intrinsic.Control.If(V.Caller.Switches, =, "O")
+				
+				
+				F.Intrinsic.Control.CallSub("UnhideControls")
+				
+				'Validating whether customer is inactive
+				V.Local.sCustomer.Set(V.Passed.000002)
+				
+				F.ODBC.Connection!Con.OpenCompanyConnection
+				F.Intrinsic.String.Build("select FLAG_INACTIVE from GCG_6900_InactiveCustomers where CUSTOMER = '{0}';", V.Local.sCustomer, V.Local.sSQL)
+				F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.bFlag)
+			
+				
+				F.Intrinsic.Control.If(v.Local.bFlag)
+					
+					'Custom is inactive
+					V.Passed.GLOBAL.Set("Y")
+					V.Passed.GAB-CHK-1.Set("Y")
+
+				F.Intrinsic.Control.Else
+				
+					'Customer is active
+					V.Passed.GLOBAL.Set("N")
+					
+				F.Intrinsic.Control.EndIf
+				F.ODBC.Connection!Con.Close
+	
+			F.Intrinsic.Control.EndIf	
+		
+		F.Intrinsic.Control.Case(14385)
+		'AR Customer Master post save hook
+			
+			F.Intrinsic.Control.If(V.Caller.Switches, =, "O")
+				
+				'Validating if customer is inactive/active and option is on/off
+				F.Intrinsic.Control.If(V.Passed.GAB-CHK-1, =, "Y", "AND", V.Passed.GLOBAL, =, "N")
+					
+					'If option is on and customer is active, then it means a new record must be created for the customer = Customer will be inactive
+					V.Local.sCustomer.Set(V.Passed.000002)
+					F.Intrinsic.String.Format(V.Ambient.Now, "YYYY-MM-DD HH:NN:SS", V.Local.sDateTime)
+					
+					'Inserting record in custom table
+					F.ODBC.Connection!Con.OpenCompanyConnection
+					F.Intrinsic.String.Build("UPDATE GCG_6900_InactiveCustomers Set FLAG_INACTIVE = '1', USER_ID = '{1}', DATETIME_STAMP = '{2}' Where CUSTOMER = '{0}';", V.Local.sCustomer, V.Caller.User, V.Local.sDateTime, V.Local.sSQL)
+					F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+					
+					'Flagging customer on credit hold to stop order generation process
+					F.Intrinsic.String.Build("update CUSTOMER_MASTER set FLAG_CREDIT_HOLD = 'Y' where CUSTOMER = '{0}' and REC = '1';", V.Local.sCustomer, V.Local.sSQL)
+					F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+					
+					F.ODBC.Connection!Con.Close
+				
+				F.Intrinsic.Control.ElseIf(V.Passed.GAB-CHK-1, =, "N", "AND", V.Passed.GLOBAL, =, "Y")
+					
+					'If option is off and customer is inactive, then it means existing record must be updated = Customer will be active again
+					V.Local.sCustomer.Set(V.Passed.000002)
+					F.Intrinsic.String.Format(V.Ambient.Now, "YYYY-MM-DD HH:NN:SS", V.Local.sDateTime)
+					'Updating record in custom table
+					F.ODBC.Connection!Con.OpenCompanyConnection
+					F.Intrinsic.String.Build("UPDATE GCG_6900_InactiveCustomers Set FLAG_INACTIVE = '0', USER_ID = '{1}', DATETIME_STAMP = '{2}' Where CUSTOMER = '{0}';", V.Local.sCustomer, V.Caller.User, V.Local.sDateTime, V.Local.sSQL)
+					F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+					
+					'Unflagging customer on credit hold to stop order generation process
+					F.Intrinsic.String.Build("update CUSTOMER_MASTER set FLAG_CREDIT_HOLD = 'N' where CUSTOMER = '{0}' and REC = '1';", V.Local.sCustomer, V.Local.sSQL)
+					F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+					
+					F.ODBC.Connection!Con.Close				
+				
+				F.Intrinsic.Control.EndIf
+			
+			F.Intrinsic.Control.EndIf
+	
+'		F.Intrinsic.Control.Case(11560)
+'		'Order Entry Header populate hook	
+'			
+'			F.Intrinsic.Control.If(V.Caller.Switches, =, "N")
+'			
+'				V.Local.sCustomer.Set(V.Passed.000006)
+'		
+'				F.ODBC.Connection!Con.OpenCompanyConnection
+'				F.Intrinsic.String.Build("select FLAG_INACTIVE from GCG_6900_InactiveCustomers where CUSTOMER = '{0}';", V.Local.sCustomer, V.Local.sSQL)
+'				F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sFlag)
+'				F.ODBC.Connection!Con.Close	
+'				
+'				F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+
+'					F.Intrinsic.UI.Msgbox("Inactive Customer", "Error")
+'					
+'				F.Intrinsic.Control.EndIf
+'			
+'			F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Control.EndSelect
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.CheckTable.Start
+'This subroutine validates whether the custom table exist, creates it if it doesn't.
+
+F.Intrinsic.Control.Try
+
+	V.Local.bExists.Declare(Boolean)
+	
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.TableExists("GCG_6900_InactiveCustomers", V.Local.bExists)
+		F.Intrinsic.Control.If(V.Local.bExists, =, False)
+			F.ODBC.Connection!Con.Execute("CREATE TABLE GCG_6900_InactiveCustomers (CUSTOMER CHAR(6), FLAG_INACTIVE BIT, USER_ID CHAR(20), DATETIME_STAMP DATETIME);")
+			F.ODBC.Connection!Con.Execute("CREATE UNIQUE INDEX GCG_6900_IDX1  ON GCG_6900_InactiveCustomers ( CUSTOMER );")
+		F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!Con.Close
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.CheckTable.End
+
+Program.Sub.CatchError.Start
+'To display the error
+F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}", V.Ambient.ScriptPath, V.Ambient.Newline, V.Ambient.SubroutineCalledFrom, V.Ambient.ErrorNumber, V.Ambient.ErrorDescription, V.Ambient.GABVersion, V.Global.sError) 
+F.Intrinsic.UI.Msgbox(V.Global.sError)
+F.Intrinsic.Control.CallSub("Unload")
+Program.Sub.CatchError.End
+
+Program.Sub.Unload.Start
+'Closes the connection if it is open
+f.Intrinsic.Control.If(v.ODBC.con.exists,=,"1") 	
+    f.ODBC.Connection!Con.Close
+f.Intrinsic.Control.EndIf
+
+'Ending program
+F.Intrinsic.Control.End
+Program.Sub.Unload.End
+
+Program.Sub.UnhideControls.Start
+'This subroutine unhide and format labels and a checkbox in the SO Header screen
+
+F.Intrinsic.Control.Try
+	
+	'Unhiding controls
+	F.Intrinsic.UI.ChangeCallerProperty(V.Passed.GAB-CHK-1, "HIDE", 0) 'True is 1, False 0
+	F.Intrinsic.UI.ChangeCallerProperty(V.Passed.GAB-CHK-1, "LOCK", 0)
+	F.Intrinsic.UI.ChangeCallerProperty(V.Passed.GAB-LBL-1, "HIDE", 0)
+	
+	'Setting up checkbox's message
+	V.Passed.GAB-LBL-1.Set("Inactive Customer?") 
+	
+	'Setting up the position for each control
+	'PT is vertical position, PL is horizontal position
+	F.Intrinsic.Variable.SetProperty("GAB-LBL-1", "PT", 25)
+	F.Intrinsic.Variable.SetProperty("GAB-LBL-1", "PL", 195)
+	F.Intrinsic.Variable.SetProperty("GAB-LBL-1", "PW", 220)
+
+	F.Intrinsic.Variable.SetProperty("GAB-CHK-1", "PT", 25) 
+	F.Intrinsic.Variable.SetProperty("GAB-CHK-1", "PL", 170)
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.UnhideControls.End
+
+Program.Sub.Comments.Start
+${$5$}$2.0.0.0$}$2
+${$6$}$adsouza$}$20230811171922684$}$JX3L09Cgehg7O+lKYSb2ur8FFsJUp9u/7MUX2BbBq2JZQTZwH4wC4ErRIC0o7y3w/HMHmUu5VXc=
+Program.Sub.Comments.End
